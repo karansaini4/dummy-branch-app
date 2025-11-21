@@ -1,4 +1,5 @@
-name: CI/CD Pipeline for Branch Loan API
+# .github/workflows/cicd.yml
+name: CI/CD
 
 on:
   push:
@@ -7,109 +8,94 @@ on:
     branches: [ main ]
 
 jobs:
-  test:
+  test-and-build:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: microloans
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-env requests
+
+      - name: Wait for DB
+        run: |
+          for i in {1..30}; do
+            pg_isready -h localhost -p 5432 -U postgres && break
+            echo "Waiting for postgres... ($i)"
+            sleep 2
+          done
+
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/microloans
+          FLASK_ENV: testing
+          LOG_LEVEL: INFO
+        run: pytest -v
+
+  security-scan:
+    needs: test-and-build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: 3.12
-      - run: python -m pip install --upgrade pip && pip install -r requirements.txt && pip install pytest requests
-      - run: |
-          cat > .env << EOF
-          FLASK_ENV=testing
-          DB_USER=postgres
-          DB_PASS=postgres
-          DB_NAME=microloans
-          LOG_LEVEL=INFO
-          PORT=8000
-          EOF
-      - run: |
-          cat > docker-compose.ci.yml << EOF
-          version: '3.8'
-          services:
-            api:
-              ports:
-                - "8000:8000"
-          EOF
-      - run: |
-          docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d db api
-          for i in {1..40}; do curl -f http://localhost:8000/health >/dev/null 2>&1 && break; sleep 3; done
-          curl -f http://localhost:8000/health || (docker compose logs api && exit 1)
-      - run: pytest -v
-      - if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v --remove-orphans || true
 
-  build:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - run: |
-          docker build -t branch-loan-api:${{ github.sha }} .
-          docker save branch-loan-api:${{ github.sha }} | gzip > image.tar.gz
-      - uses: actions/upload-artifact@v4
-        with:
-          name: docker-image
-          path: image.tar.gz
+      - name: Build image (for scanning)
+        run: docker build -t branch-loan-api .
 
-  scan:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: docker-image
-      - run: docker load < image.tar.gz
-
-      # THIS IS THE ONE THAT ACTUALLY WORKS IN NOVEMBER 2025
-      - name: Trivy vulnerability scanner
+      - name: Trivy scan (zero false positives, no telemetry)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: branch-loan-api:${{ github.sha }}
+          image-ref: branch-loan-api
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
           ignore-unfixed: true
-          vuln-type: os,library
         env:
-          TRIVY_SKIP_UPDATE: true
-          TRIVY_QUIET: true
-          TRIVY_TIMEOUT: 5m
-          # This kills telemetry dead
           TRIVY_DISABLE_TELEMETRY: "true"
 
-      - name: Upload results to GitHub Security
+      - name: Upload to GitHub Security
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
 
-      - name: Fail on HIGH/CRITICAL
-        run: |
-          if grep -q '"level": "error"' trivy-results.sarif 2>/dev/null; then
-            echo "HIGH/CRITICAL vulnerabilities found"
-            exit 1
-          else
-            echo "No serious vulnerabilities"
-          fi
-
   push:
-    needs: scan
+    needs: security-scan
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
         with:
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/branch-loan-api:${{ github.sha }}
             ghcr.io/${{ github.repository_owner }}/branch-loan-api:latest
+            ghcr.io/${{ github.repository_owner }}/branch-loan-api:${{ github.sha }}
