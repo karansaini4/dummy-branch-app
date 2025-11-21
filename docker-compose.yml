@@ -14,20 +14,39 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - backend
 
   api:
     build: .
+    env_file:
+      - .env
     environment:
-      FLASK_ENV: development
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/microloans
+      FLASK_ENV: ${FLASK_ENV}
+      DATABASE_URL: postgresql+psycopg2://${DB_USER}:${DB_PASS}@db:5432/${DB_NAME}
+      LOG_LEVEL: ${LOG_LEVEL}
       PORT: 8000
       PYTHONPATH: /app
     depends_on:
       db:
         condition: service_healthy
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     command: gunicorn -w 2 -b 0.0.0.0:8000 wsgi:app
+    networks:
+      - backend
+
+  reverse-proxy:
+    build: ./docker/nginx
+    ports:
+      - "443:443"
+    depends_on:
+      - api
+    networks:
+      - backend
 
 volumes:
   db_data:
+
+networks:
+  backend:
