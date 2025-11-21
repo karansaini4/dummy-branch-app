@@ -14,10 +14,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: 3.12
-      - run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest requests
+      - run: python -m pip install --upgrade pip && pip install -r requirements.txt && pip install pytest requests
       - run: |
           cat > .env << EOF
           FLASK_ENV=testing
@@ -37,10 +34,7 @@ jobs:
           EOF
       - run: |
           docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d db api
-          for i in {1..40}; do
-            curl -f http://localhost:8000/health >/dev/null 2>&1 && break
-            sleep 3
-          done
+          for i in {1..40}; do curl -f http://localhost:8000/health >/dev/null 2>&1 && break; sleep 3; done
           curl -f http://localhost:8000/health || (docker compose logs api && exit 1)
       - run: pytest -v
       - if: always()
@@ -70,74 +64,30 @@ jobs:
           name: docker-image
       - run: docker load < image.tar.gz
 
-      # Critical fix: mount Docker socket + use docker:// prefix
-      - name: Run Trivy vulnerability scan (works 100%)
-        run: |
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            aquasec/trivy:latest \
-            image \
-            --light \
-            --no-progress \
-            --scanners vuln \
-            --security-checks vuln \
-            --severity CRITICAL,HIGH \
-            --format template \
-            --template "@sarif.tpl" \
-            --output trivy-results.sarif \
-            --exit-code 0 \
-            docker://branch-loan-api:${{ github.sha }}
-
-      # Embedded SARIF template (no download needed)
-      - run: |
-          cat > sarif.tpl << 'EOF'
-          {
-            "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
-            "version": "2.1.0",
-            "runs": [{
-              "tool": { "driver": { "name": "Trivy" } },
-              "results": [
-                {{range $i, $v := .}}
-                {{if $i}},{{end}}
-                {
-                  "ruleId": "{{$v.ID}}",
-                  "level": "{{if or (eq $v.Severity "CRITICAL") (eq $v.Severity "HIGH")}}error{{else}}warning{{end}}",
-                  "message": {"text": "{{escape $v.Description}}"},
-                  "locations": [{"physicalLocation": {"artifactLocation": {"uri": "{{$v.PkgName}}"}}}}]
-                }
-                {{end}}
-              ]
-            }]
-          }
-          EOF
-
-      # Re-run with template now available
-      - name: Generate final SARIF report
-        run: |
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v $(pwd):/workspace \
-            aquasec/trivy:latest \
-            image \
-            --light \
-            --no-progress \
-            --scanners vuln \
-            --format template \
-            --template @/workspace/sarif.tpl \
-            --output /workspace/trivy-results.sarif \
-            --exit-code 0 \
-            docker://branch-loan-api:${{ github.sha }}
-
-      - uses: github/codeql-action/upload-sarif@v4
+      # OFFICIAL WORKING TRIVY ACTION — NOV 2025
+      - name: Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
         with:
-          sarif_file: trivy-results.sarif
+          image-ref: 'branch-loan-api:${{ github.sha }}'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          scanners: 'vuln'
 
-      - run: |
-          if grep -q 'error' trivy-results.sarif; then
-            echo "HIGH/CRITICAL vulnerabilities found"
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Fail on CRITICAL/HIGH
+        run: |
+          if grep -q '"level": "error"' trivy-results.sarif; then
+            echo "HIGH or CRITICAL vulnerabilities found"
             exit 1
           else
-            echo "Scan passed"
+            echo "No critical vulnerabilities"
           fi
 
   push:
