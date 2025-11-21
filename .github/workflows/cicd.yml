@@ -90,14 +90,51 @@ jobs:
       - name: Load Docker image
         run: docker load < image.tar.gz
 
-      - name: Download Trivy SARIF template
-        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/sarif.tpl -o sarif.tpl
-
-      - name: Run Trivy in standalone/light mode (no network, no DB download)
+      # NO MORE NETWORK CALLS — SARIF template embedded directly
+      - name: Create Trivy SARIF template
         run: |
-          docker run --rm \
-            -v $(pwd):/workspace \
-            aquasec/trivy:latest \
+          cat > sarif.tpl << 'EOF'
+          {
+            "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+            "version": "2.1.0",
+            "runs": [
+              {
+                "tool": {
+                  "driver": {
+                    "name": "Trivy",
+                    "version": "0.53.0",
+                    "informationUri": "https://github.com/aquasecurity/trivy"
+                  }
+                },
+                "results": [
+                  {{ range $i, $v := . }}
+                  {{ if $i }},{{ end }}
+                  {
+                    "ruleId": "{{ $v.ID }}",
+                    "level": "{{ if eq $v.Severity "CRITICAL" }}error{{ else if eq $v.Severity "HIGH" }}error{{ else if eq $v.Severity "MEDIUM" }}warning{{ else }}note{{ end }}",
+                    "message": { "text": "{{ escape $v.Description }}" },
+                    "locations": [
+                      {
+                        "physicalLocation": {
+                          "artifactLocation": { "uri": "{{ $v.PkgName }}@{{ $v.InstalledVersion }}" }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "severity": "{{ $v.Severity }}",
+                      "vulnerability": "{{ $v.VulnerabilityID }}"
+                    }
+                  }
+                  {{ end }}
+                ]
+              }
+            ]
+          }
+          EOF
+
+      - name: Run Trivy in light mode (no network needed)
+        run: |
+          docker run --rm -v $(pwd):/workspace aquasec/trivy:latest \
             image \
             --light \
             --no-progress \
@@ -108,21 +145,21 @@ jobs:
             --exit-code 0 \
             branch-loan-api:${{ github.sha }}
 
-      - name: Show results (debug)
+      - name: Show scan results
         run: cat trivy-results.sarif || echo "No vulnerabilities found"
 
-      - name: Upload SARIF to GitHub Security
+      - name: Upload to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
 
-      - name: Fail on HIGH/CRITICAL (only if actually found)
+      - name: Fail only if HIGH/CRITICAL found
         run: |
-          if grep -q '"level": "CRITICAL"' trivy-results.sarif || grep -q '"level": "HIGH"' trivy-results.sarif; then
-            echo "HIGH or CRITICAL vulnerabilities detected"
+          if grep -q '"level": "error"' trivy-results.sarif; then
+            echo "HIGH or CRITICAL vulnerability found"
             exit 1
           else
-            echo "Scan passed - no critical/high issues"
+            echo "Scan passed — no HIGH/CRITICAL issues"
           fi
 
   push:
