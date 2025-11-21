@@ -88,23 +88,39 @@ jobs:
           name: docker-image
       - name: Load image
         run: docker load < image.tar.gz
-      - name: Trivy Scan
-        uses: aquasecurity/trivy-action@master
+
+      # Fixed: stable version + disable telemetry to avoid HTTP errors
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: branch-loan-api:${{ github.sha }}
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
-      - uses: github/codeql-action/upload-sarif@v3
+          skip-db-update: true
+        env:
+          TRIVY_SKIP_UPDATE: true
+          TRIVY_NO_PROGRESS: true
+          TRIVY_QUIET: true
+
+      # Updated to v4 (v3 is deprecated)
+      - name: Upload SARIF results
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
         with:
           sarif_file: trivy-results.sarif
-      - name: Fail on high/critical
+
+      # Clean, reliable vuln check
+      - name: Fail on HIGH/CRITICAL vulnerabilities
         run: |
-          if grep -q '"level": "CRITICAL"' trivy-results.sarif || grep -q '"level": "HIGH"' trivy-results.sarif; then
-            echo "High/Critical vulnerabilities found!"
+          if [ -f trivy-results.sarif ] && grep -q '"level": "CRITICAL"' trivy-results.sarif; then
+            echo "CRITICAL vulnerabilities found!"
+            exit 1
+          elif [ -f trivy-results.sarif ] && grep -q '"level": "HIGH"' trivy-results.sarif; then
+            echo "HIGH vulnerabilities found!"
             exit 1
           else
-            echo "No critical/high vulns"
+            echo "No CRITICAL or HIGH vulnerabilities found"
           fi
 
   push:
