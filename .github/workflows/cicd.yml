@@ -1,4 +1,4 @@
-
+# .github/workflows/cicd.yml
 name: CI/CD
 
 on:
@@ -57,16 +57,17 @@ jobs:
   security-scan:
     needs: test-and-build
     runs-on: ubuntu-latest
+    permissions:  # ← THIS FIXES THE TELEMETRY ERROR
+      actions: write  # For SARIF upload telemetry
+      security-events: write  # For code scanning alerts
     steps:
       - uses: actions/checkout@v4
 
       - name: Build image
         run: docker build -t branch-loan-api .
 
-      # THIS KILLS THE TELEMETRY ERROR FOREVER
-      - name: Trivy scan (no telemetry, no red error)
+      - name: Trivy scan
         uses: aquasecurity/trivy-action@master
-        continue-on-error: true   # This is the magic line
         with:
           image-ref: branch-loan-api
           format: sarif
@@ -74,9 +75,8 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
 
-      - name: Upload results (always runs)
+      - name: Upload results to GitHub Security
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
         with:
           sarif_file: trivy-results.sarif
 
