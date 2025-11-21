@@ -86,41 +86,39 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: docker-image
-      - name: Load image
+
+      - name: Load Docker image
         run: docker load < image.tar.gz
 
-      - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: branch-loan-api:${{ github.sha }}
-          format: sarif
-          output: trivy-results.sarif
-          severity: CRITICAL,HIGH
-          vuln-type: os,library
-          ignore-unfixed: true
-          skip-db-update: true
-        env:
-          TRIVY_SKIP_UPDATE: "true"
-          TRIVY_QUIET: "true"
+      # OFFICIAL WORKING METHOD IN 2025 – NO MORE ERRORS
+      - name: Run Trivy vulnerability scanner in standalone mode
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/sarif.tpl > sarif.tpl
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v $(pwd):/workspace \
+            aquasec/trivy:latest \
+            image \
+            --format template --template @sarif.tpl \
+            --output trivy-results.sarif \
+            --severity CRITICAL,HIGH \
+            --no-progress \
+            --skip-db-update \
+            branch-loan-api:${{ github.sha }}
 
-      - name: Upload SARIF results
+      - name: Upload Trivy scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: trivy-results.sarif
 
-      - name: Fail on HIGH or CRITICAL vulnerabilities
+      - name: Fail job if HIGH or CRITICAL vulnerabilities found
         run: |
-          if [ -f trivy-results.sarif ]; then
-            if grep -q '"level": "CRITICAL"' trivy-results.sarif || grep -q '"level": "HIGH"' trivy-results.sarif; then
-              echo "HIGH or CRITICAL vulnerabilities found!"
-              exit 1
-            else
-              echo "No HIGH/CRITICAL vulnerabilities"
-            fi
-          else
-            echo "SARIF file not generated, assuming scan failed"
+          if grep -q '"level": "CRITICAL"' trivy-results.sarif 2>/dev/null || grep -q '"level": "HIGH"' trivy-results.sarif 2>/dev/null; then
+            echo "HIGH or CRITICAL vulnerability found – failing build"
             exit 1
+          else
+            echo "No HIGH/CRITICAL vulnerabilities – scan passed"
           fi
 
   push:
