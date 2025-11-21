@@ -84,20 +84,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-        with: { name: docker-image }
+        with:
+          name: docker-image
       - name: Load image
         run: docker load < image.tar.gz
       - name: Trivy Scan
-        uses: aquasecurity/trivy-action@master   # ← FIXED HERE
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: branch-loan-api:${{ github.sha }}
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
       - uses: github/codeql-action/upload-sarif@v3
-        with: { sarif_file: trivy-results.sarif }
+        with:
+          sarif_file: trivy-results.sarif
       - name: Fail on high/critical
-        run: grep -q '"level": "[CRITICAL|HIGH]"' trivy-results.sarif && exit 1 || echo "No critical/high vulns"
+        run: |
+          if grep -q '"level": "CRITICAL"' trivy-results.sarif || grep -q '"level": "HIGH"' trivy-results.sarif; then
+            echo "High/Critical vulnerabilities found!"
+            exit 1
+          else
+            echo "No critical/high vulns"
+          fi
 
   push:
     needs: scan
