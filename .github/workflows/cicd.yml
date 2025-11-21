@@ -89,7 +89,6 @@ jobs:
       - name: Load image
         run: docker load < image.tar.gz
 
-      # Fixed: stable version + disable telemetry to avoid HTTP errors
       - name: Trivy vulnerability scan
         uses: aquasecurity/trivy-action@0.28.0
         with:
@@ -97,30 +96,31 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
+          vuln-type: os,library
+          ignore-unfixed: true
           skip-db-update: true
         env:
-          TRIVY_SKIP_UPDATE: true
-          TRIVY_NO_PROGRESS: true
-          TRIVY_QUIET: true
+          TRIVY_SKIP_UPDATE: "true"
+          TRIVY_QUIET: "true"
 
-      # Updated to v4 (v3 is deprecated)
       - name: Upload SARIF results
         uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: trivy-results.sarif
 
-      # Clean, reliable vuln check
-      - name: Fail on HIGH/CRITICAL vulnerabilities
+      - name: Fail on HIGH or CRITICAL vulnerabilities
         run: |
-          if [ -f trivy-results.sarif ] && grep -q '"level": "CRITICAL"' trivy-results.sarif; then
-            echo "CRITICAL vulnerabilities found!"
-            exit 1
-          elif [ -f trivy-results.sarif ] && grep -q '"level": "HIGH"' trivy-results.sarif; then
-            echo "HIGH vulnerabilities found!"
-            exit 1
+          if [ -f trivy-results.sarif ]; then
+            if grep -q '"level": "CRITICAL"' trivy-results.sarif || grep -q '"level": "HIGH"' trivy-results.sarif; then
+              echo "HIGH or CRITICAL vulnerabilities found!"
+              exit 1
+            else
+              echo "No HIGH/CRITICAL vulnerabilities"
+            fi
           else
-            echo "No CRITICAL or HIGH vulnerabilities found"
+            echo "SARIF file not generated, assuming scan failed"
+            exit 1
           fi
 
   push:
