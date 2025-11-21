@@ -25,7 +25,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest requests  # For HTTP tests
+          pip install pytest requests  # Ensures requests for health check + tests
 
       - name: Create .env for CI
         run: |
@@ -49,12 +49,14 @@ jobs:
       - name: Start services with Docker Compose (for integration tests)
         run: |
           docker-compose -f docker-compose.yml -f docker-compose.ci.yml up -d db api
-          # Wait for health (uses /health endpoint)
-          timeout 60s bash -c 'until docker-compose -f docker-compose.yml -f docker-compose.ci.yml exec api curl -f http://localhost:8000/health; do sleep 1; done' || false
+          # Wait for API health using Python/requests (no curl needed)
+          timeout 60s bash -c 'until docker-compose -f docker-compose.yml -f docker-compose.ci.yml exec api python -c "import requests; r = requests.get(\"http://localhost:8000/health\", timeout=5); print(\"Status:\", r.status_code); exit(0 if r.status_code == 200 else 1)"; do sleep 1; echo "Waiting for API..."; done' || (echo "Health check failed after 60s"; exit 1)
+          # Fallback: If no /health, wait fixed time after DB healthy
+          sleep 10  # Extra buffer for startup
 
       - name: Run tests
         run: |
-          pytest  # Unit + integration against http://localhost:8000
+          pytest  # Now hits running API (e.g., via requests to localhost:8000)
 
       - name: Stop services
         if: always()
@@ -74,8 +76,8 @@ jobs:
       - name: Build Docker image
         run: |
           docker build -t branch-loan-api:${{ github.sha }} .
-          # Run Alembic migrations in image (if needed for build-time schema)
-          docker run --rm branch-loan-api:${{ github.sha }} alembic upgrade head || echo "No migrations or skipped"
+          # Run Alembic migrations in image (if needed)
+          docker run --rm --env-file .env branch-loan-api:${{ github.sha }} alembic upgrade head || echo "No migrations or skipped"
 
   scan:
     needs: build
