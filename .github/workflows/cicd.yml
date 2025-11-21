@@ -35,7 +35,7 @@ jobs:
           PORT=8000
           EOF
 
-      - name: Create docker-compose override for CI
+      - name: Create docker-compose override
         run: |
           cat > docker-compose.ci.yml << EOF
           version: '3.8'
@@ -45,118 +45,73 @@ jobs:
                 - "8000:8000"
           EOF
 
-      - name: Start services (db + api)
+      - name: Start services
         run: |
           docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d db api
-
-          echo "Waiting for API to become healthy on http://localhost:8000/health ..."
+          echo "Waiting for API health..."
           for i in {1..40}; do
-            if curl -f http://localhost:8000/health >/dev/null 2>&1; then
-              echo "API is healthy!"
-              break
-            fi
-            echo "Still waiting... ($i/40)"
+            curl -f http://localhost:8000/health >/dev/null 2>&1 && echo "API healthy!" && break
+            echo "Waiting... ($i/40)"
             sleep 3
           done
-
-          # Final check + helpful logs if it fails
-          curl -f http://localhost:8000/health || (
-            echo "API failed to start! Dumping logs:"
-            docker compose -f docker-compose.yml -f docker-compose.ci.yml logs api
-            docker compose -f docker-compose.yml -f docker-compose.ci.yml logs db
-            exit 1
-          )
+          curl -f http://localhost:8000/health || (docker compose logs api && exit 1)
 
       - name: Run tests
-        run: |
-          pytest -v
+        run: pytest -v
 
       - name: Stop services
         if: always()
-        run: |
-          docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v --remove-orphans || true
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v --remove-orphans || true
 
   build:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and export Docker image
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build and export image
         run: |
           docker build -t branch-loan-api:${{ github.sha }} .
           docker save branch-loan-api:${{ github.sha }} | gzip > image.tar.gz
-
-      - name: Upload Docker image as artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: docker-image
           path: image.tar.gz
-          retention-days: 1
 
   scan:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download Docker image
-        uses: actions/download-artifact@v4
-        with:
-          name: docker-image
-
-      - name: Load Docker image
-        run: |
-          docker load < image.tar.gz
-          docker image ls | grep branch-loan-api
-
-      - name: Scan image with Trivy
-        uses: aquasec/trivy-action@master
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: docker-image }
+      - name: Load image
+        run: docker load < image.tar.gz
+      - name: Trivy Scan
+        uses: aquasecurity/trivy-action@master   # ← FIXED HERE
         with:
           image-ref: branch-loan-api:${{ github.sha }}
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
-
-      - name: Upload Trivy results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-results.sarif
-
-      - name: Fail on HIGH or CRITICAL vulnerabilities
-        run: |
-          if grep -q '"level": "CRITICAL"' trivy-results.sarif || grep -q '"level": "HIGH"' trivy-results.sarif; then
-            echo "High or Critical vulnerabilities detected!"
-            exit 1
-          else
-            echo "No HIGH/CRITICAL vulnerabilities found"
-          fi
+      - uses: github/codeql-action/upload-sarif@v3
+        with: { sarif_file: trivy-results.sarif }
+      - name: Fail on high/critical
+        run: grep -q '"level": "[CRITICAL|HIGH]"' trivy-results.sarif && exit 1 || echo "No critical/high vulns"
 
   push:
     needs: scan
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push image
-        uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
